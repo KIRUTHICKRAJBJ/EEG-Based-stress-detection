@@ -1,64 +1,100 @@
-# main.py
 import streamlit as st
-import joblib
+import pandas as pd
 import numpy as np
-from firebase_config import db
+import joblib
+import datetime
+import firebase_admin
+from firebase_admin import credentials, firestore
 
+# Initialize Firebase Admin SDK
+if not firebase_admin._apps:
+    cred = credentials.Certificate("serviceAccountKey.json")  # Your service account JSON
+    firebase_admin.initialize_app(cred)
+
+# Firestore client
+db = firestore.client()
+
+# Load ML model and scaler
+model = joblib.load('svm_stress_99.joblib')  # Your trained model
+scaler = joblib.load('scaler.joblib')         # Your scaler
+
+# Stress detection function
+def predict_stress(features):
+    features = np.array(features).reshape(1, -1)
+    features = scaler.transform(features)
+    prediction = model.predict(features)
+    stress_level = int(prediction[0])
+    return stress_level
+
+# Mapping for stress level
+stress_mapping = {
+    0: "Relaxed",
+    1: "Moderate Stress",
+    2: "High Stress"
+}
+
+# Main stress detection app
 def stress_detection_app(user_email):
-    st.markdown("<h1>🧠 EEG Stress Detection</h1>", unsafe_allow_html=True)
+    st.title("🔮 Stress Prediction")
 
-    tabs = st.tabs(["🔮 Predict Stress", "🕓 Prediction History"])
+    st.write("Please input your EEG frequency band powers:")
 
-    with tabs[0]:  # First Tab - Stress Prediction
-        model = joblib.load("svm_stress_99.joblib")
-        scaler = joblib.load("scaler.joblib")
+    # Input fields
+    delta_power = st.number_input("Delta Power", format="%.5f")
+    theta_power = st.number_input("Theta Power", format="%.5f")
+    alpha_power = st.number_input("Alpha Power", format="%.5f")
+    beta_power = st.number_input("Beta Power", format="%.5f")
+    gamma_power = st.number_input("Gamma Power", format="%.5f")
 
-        feature_names = ["Delta Power", "Theta Power", "Alpha Power", "Beta Power", "Gamma Power"]
-        inputs = [st.number_input(f"{name}", value=0.0, format="%.3f") for name in feature_names]
+    if st.button("🔮 Predict"):
+        with st.spinner("Predicting..."):
+            input_features = [delta_power, theta_power, alpha_power, beta_power, gamma_power]  # Correct order!
+            prediction = predict_stress(input_features)
+            stress_label = stress_mapping[prediction]
 
-        if st.button("🚀 Predict Stress Level"):
-            features = np.array(inputs).reshape(1, -1)
-            features_scaled = scaler.transform(features)
-            prediction = model.predict(features_scaled)[0]
+            st.success(f"🔎 Predicted: **{stress_label}**")
 
-            stress_labels = {
-                0: "🟢 **Low Stress** – Stay relaxed!",
-                1: "🟡 **Moderate Stress** – Keep calm!",
-                2: "🔴 **High Stress** – Take a break!"
-            }
-
-            st.markdown(f"### 🔎 Predicted: {stress_labels[prediction]}")
-
-            # Save into Firestore
+            # Save prediction to Firestore
+            now = datetime.datetime.now()
             data = {
-                "email": user_email,
-                "inputs": inputs,
-                "predicted_stress_level": int(prediction)
+                'user_email': user_email,
+                'delta_power': delta_power,
+                'theta_power': theta_power,
+                'alpha_power': alpha_power,
+                'beta_power': beta_power,
+                'gamma_power': gamma_power,
+                'prediction': stress_label,
+                'timestamp': now
             }
-            db.collection("stress_predictions").add(data)
-            st.success("✅ Result saved to your history!")
+            try:
+                db.collection("stress_predictions").add(data)
+                st.info("Prediction saved successfully!")
+            except Exception as e:
+                st.error("⚠️ Failed to save prediction. Please try again.")
+                st.error(f"Error: {e}")
 
-    with tabs[1]:  # Second Tab - View Prediction History
-        st.subheader("📜 Your Past Predictions")
 
-        # Fetch from Firestore
-        predictions = db.collection("stress_predictions").where("email", "==", user_email).stream()
+# History page
+def prediction_history(user_email):
+    st.title("🕓 Prediction History")
 
-        results = []
-        for pred in predictions:
-            data = pred.to_dict()
-            results.append(data)
+    try:
+        query = db.collection("stress_predictions").where("user_email", "==", user_email).order_by("timestamp", direction=firestore.Query.DESCENDING)
+        results = query.stream()
 
-        if results:
-            for idx, record in enumerate(results[::-1], 1):  # reverse to show latest first
-                stress_levels = {
-                    0: "Low Stress",
-                    1: "Moderate Stress",
-                    2: "High Stress"
-                }
-                st.write(f"**{idx}. Stress Level:** {stress_levels[record['predicted_stress_level']]}")
-                st.write(f"Inputs: {record['inputs']}")
-                st.markdown("---")
+        history = []
+        for doc in results:
+            record = doc.to_dict()
+            history.append(record)
+
+        if history:
+            df = pd.DataFrame(history)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.sort_values(by='timestamp', ascending=False)
+            st.dataframe(df[['timestamp', 'prediction']])
         else:
-            st.info("No predictions found. Make your first prediction!")
-
+            st.info("No predictions found yet. Make your first prediction!")
+    
+    except Exception as e:
+        st.error("⚠️ Failed to load history.")
+        st.error(f"Error: {e}")
