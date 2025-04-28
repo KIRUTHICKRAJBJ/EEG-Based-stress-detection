@@ -1,6 +1,8 @@
 streamlit
 firebase-admin
 pyrebase4
+gcloud
+setuptools
 scikit-learn
 joblib
 pandas
