@@ -28,7 +28,7 @@ def predict_stress(features):
 
 # Mapping for stress level
 stress_mapping = {
-    0: "Relaxed",
+    0: "Low Stress",
     1: "Moderate Stress",
     2: "High Stress"
 }
